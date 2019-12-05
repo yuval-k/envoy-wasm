@@ -17,7 +17,7 @@ using FilterHeadersStatus = Http::FilterHeadersStatus;
 using FilterMetadataStatus = Http::FilterMetadataStatus;
 using FilterTrailersStatus = Http::FilterTrailersStatus;
 using FilterDataStatus = Http::FilterDataStatus;
-using GrpcStatus = Envoy::Grpc::Status::GrpcStatus;
+using GrpcStatus = Envoy::Grpc::Status::WellKnownGrpcStatus;
 using MetricType = Envoy::Extensions::Common::Wasm::Context::MetricType;
 using PeerType = Envoy::Extensions::Common::Wasm::Context::PeerType;
 using WasmResult = Envoy::Extensions::Common::Wasm::WasmResult;
@@ -98,7 +98,7 @@ public:
   void onGrpcReceiveTrailingMetadata(uint64_t context_id, uint64_t token, uint64_t trailers);
 
   void onLog(uint64_t context_id);
-  void onDone(uint64_t context_id);
+  uint64_t onDone(uint64_t context_id);
   void onDelete(uint64_t context_id);
 
   Plugin::RootContext* getRoot(absl::string_view root_id);

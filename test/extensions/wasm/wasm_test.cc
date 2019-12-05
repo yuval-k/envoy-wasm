@@ -73,28 +73,37 @@ TEST_P(WasmTestMatrix, Logging) {
   auto plugin = std::make_shared<Extensions::Common::Wasm::Plugin>(
       name, root_id, vm_id, envoy::api::v2::core::TrafficDirection::UNSPECIFIED, local_info,
       nullptr);
-  auto wasm = std::make_unique<Extensions::Common::Wasm::Wasm>(
+  auto wasm = std::make_shared<Extensions::Common::Wasm::Wasm>(
       absl::StrCat("envoy.wasm.runtime.", std::get<0>(GetParam())), vm_id, vm_configuration, scope,
       cluster_manager, *dispatcher);
   EXPECT_NE(wasm, nullptr);
+  auto wasm_weak = std::weak_ptr<Extensions::Common::Wasm::Wasm>(wasm);
+  auto wasm_handler = std::make_unique<Extensions::Common::Wasm::WasmHandle>(std::move(wasm));
   const auto code = TestEnvironment::readFileToStringForTest(TestEnvironment::substitute(
       absl::StrCat("{{ test_rundir }}/test/extensions/wasm/test_data/logging_",
                    std::get<1>(GetParam()), ".wasm")));
   EXPECT_FALSE(code.empty());
-  auto context = std::make_unique<TestContext>(wasm.get());
+  auto context = std::make_unique<TestContext>(wasm_weak.lock().get());
 
   EXPECT_CALL(*context, scriptLog_(spdlog::level::warn, Eq("warn configure-test")));
   EXPECT_CALL(*context, scriptLog_(spdlog::level::trace, Eq("test trace logging")));
   EXPECT_CALL(*context, scriptLog_(spdlog::level::debug, Eq("test debug logging")));
   EXPECT_CALL(*context, scriptLog_(spdlog::level::err, Eq("test error logging")));
   EXPECT_CALL(*context, scriptLog_(spdlog::level::info, Eq("test tick logging")));
+  EXPECT_CALL(*context, scriptLog_(spdlog::level::info, Eq("onDone logging")));
+  EXPECT_CALL(*context, scriptLog_(spdlog::level::info, Eq("onDelete logging")));
 
-  EXPECT_TRUE(wasm->initialize(code, false));
-  wasm->setContext(context.get());
+  EXPECT_TRUE(wasm_weak.lock()->initialize(code, false));
+  wasm_weak.lock()->setContext(context.get());
   auto root_context = context.get();
-  wasm->startForTesting(std::move(context), plugin);
-  wasm->configure(root_context, "configure-test");
-  wasm->tickHandler(root_context->id());
+  wasm_weak.lock()->startForTesting(std::move(context), plugin);
+  wasm_weak.lock()->configure(root_context, plugin, "configure-test");
+  wasm_handler.reset();
+  dispatcher->run(Event::Dispatcher::RunType::NonBlock);
+  // This will SEGV on nullptr if wasm has been deleted.
+  wasm_weak.lock()->tickHandler(root_context->id());
+  dispatcher->run(Event::Dispatcher::RunType::NonBlock);
+  dispatcher->clearDeferredDeleteList();
 }
 
 TEST_P(WasmTest, BadSignature) {
@@ -120,7 +129,7 @@ TEST_P(WasmTest, BadSignature) {
   EXPECT_FALSE(code.empty());
   EXPECT_THROW_WITH_MESSAGE(wasm->initialize(code, false),
                             Extensions::Common::Wasm::WasmVmException,
-                            "Bad function signature for: proxy_onConfigure");
+                            "Bad function signature for: proxy_on_configure");
 }
 
 TEST_P(WasmTest, Segv) {
@@ -148,13 +157,13 @@ TEST_P(WasmTest, Segv) {
   EXPECT_TRUE(wasm->initialize(code, false));
 
   if (GetParam() == "v8") {
-    EXPECT_THROW_WITH_MESSAGE(wasm->startForTesting(std::move(context), plugin),
-                              Extensions::Common::Wasm::WasmException,
-                              "Function: proxy_onStart failed: Uncaught RuntimeError: unreachable");
+    EXPECT_THROW_WITH_MESSAGE(
+        wasm->startForTesting(std::move(context), plugin), Extensions::Common::Wasm::WasmException,
+        "Function: proxy_on_start failed: Uncaught RuntimeError: unreachable");
   } else if (GetParam() == "wavm") {
     EXPECT_THROW_WITH_REGEX(wasm->startForTesting(std::move(context), plugin),
                             Extensions::Common::Wasm::WasmException,
-                            "Function: proxy_onStart failed: wavm.reachedUnreachable.*");
+                            "Function: proxy_on_start failed: wavm.reachedUnreachable.*");
   } else {
     ASSERT_FALSE(true); // Neither of the above was matched.
   }
@@ -189,10 +198,10 @@ TEST_P(WasmTest, DivByZero) {
   if (GetParam() == "v8") {
     EXPECT_THROW_WITH_MESSAGE(
         context->onLog(), Extensions::Common::Wasm::WasmException,
-        "Function: proxy_onLog failed: Uncaught RuntimeError: divide by zero");
+        "Function: proxy_on_log failed: Uncaught RuntimeError: divide by zero");
   } else if (GetParam() == "wavm") {
     EXPECT_THROW_WITH_REGEX(context->onLog(), Extensions::Common::Wasm::WasmException,
-                            "Function: proxy_onLog failed: wavm.integerDivideByZeroOrOverflow.*");
+                            "Function: proxy_on_log failed: wavm.integerDivideByZeroOrOverflow.*");
   } else {
     ASSERT_FALSE(true); // Neither of the above was matched.
   }

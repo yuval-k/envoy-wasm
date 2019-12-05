@@ -55,8 +55,9 @@ envoy_cc_library(
 envoy_cc_library(
     name = "wasm_hdr",
     hdrs = [
+        "context.h",
+        "exports.h",
         "wasm.h",
-        "wasm_exports.h",
     ],
     deps = [
         ":wasm_vm_interface",
@@ -69,7 +70,7 @@ envoy_cc_library(
         "//source/common/config:datasource_lib",
         "//source/common/stats:stats_lib",
         "//source/extensions/filters/http:well_known_names",
-        "@envoy_api//envoy/config/filter/http/wasm/v2:pkg_cc_proto",
+        "@envoy_api//envoy/config/wasm/v2:pkg_cc_proto",
     ],
 )
 
@@ -90,8 +91,9 @@ envoy_cc_library(
 envoy_cc_library(
     name = "wasm_lib",
     srcs = [
+        "context.cc",
+        "exports.cc",
         "wasm.cc",
-        "wasm_exports.cc",
     ],
     deps = [
         ":wasm_hdr",
@@ -112,5 +114,6 @@ envoy_cc_library(
         "@com_google_cel_cpp//eval/eval:field_backed_map_impl",
         "@com_google_cel_cpp//eval/public:cel_value",
         "@com_google_cel_cpp//eval/public:value_export_util",
+        "@envoy_api//envoy/config/wasm/v2:pkg_cc_proto",
     ],
 )

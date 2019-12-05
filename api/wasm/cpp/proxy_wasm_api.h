@@ -260,6 +260,10 @@ public:
   virtual RootContext* asRoot() { return nullptr; }
   virtual Context* asContext() { return nullptr; }
 
+  virtual bool onDoneBase() = 0;
+  // Called to indicate that no more calls will come and this context is being deleted.
+  virtual void onDelete() {} // Called when the stream or VM is being deleted.
+
   using HttpCallCallback =
       std::function<void(uint32_t, size_t, uint32_t)>; // headers, body_size, trailers
   using GrpcSimpleCallCallback = std::function<void(GrpcStatus status, size_t body_size)>;
@@ -291,6 +295,9 @@ public:
   virtual void onTick() {}
   // Called when data arrives on a SharedQueue.
   virtual void onQueueReady(uint32_t /* token */) {}
+
+  virtual bool onDone() { return true; } // Called when the VM is being torn down.
+  void done(); // Report that we are now done following returning false from onDone.
 
   // Low level HTTP/gRPC interface.
   virtual void onHttpCallResponse(uint32_t token, uint32_t headers, size_t body_size,
@@ -338,6 +345,8 @@ public:
 private:
   friend class GrpcCallHandlerBase;
   friend class GrpcStreamHandlerBase;
+
+  bool onDoneBase() override { return onDone(); }
 
   const std::string root_id_;
   std::unordered_map<uint32_t, HttpCallCallback> http_calls_;
@@ -392,10 +401,14 @@ public:
   }
   virtual void onDone() {} // Called when the stream has completed.
   virtual void onLog() {}  // Called after onDone when logging is requested.
-  virtual void onDelete() {
-  } // Called to indicate that no more calls will come and this context is being deleted.
 
 private:
+  // For stream Contexts, onDone always returns true.
+  bool onDoneBase() override {
+    onDone();
+    return true;
+  }
+
   RootContext* root_{};
 };
 
@@ -425,7 +438,7 @@ struct RegisterContextFactory {
 inline WasmDataPtr getConfiguration() {
   const char* value_ptr = nullptr;
   size_t value_size = 0;
-  CHECK_RESULT(proxy_getConfiguration(&value_ptr, &value_size));
+  CHECK_RESULT(proxy_get_configuration(&value_ptr, &value_size));
   return std::make_unique<WasmData>(value_ptr, value_size);
 }
 
@@ -433,7 +446,7 @@ inline std::pair<uint32_t, WasmDataPtr> getStatus() {
   uint32_t code = 0;
   const char* value_ptr = nullptr;
   size_t value_size = 0;
-  CHECK_RESULT(proxy_getStatus(&code, &value_ptr, &value_size));
+  CHECK_RESULT(proxy_get_status(&code, &value_ptr, &value_size));
   return std::make_pair(code, std::make_unique<WasmData>(value_ptr, value_size));
 }
 
@@ -455,7 +468,7 @@ inline Optional<WasmDataPtr> getProperty(std::initializer_list<StringView> parts
 
   const char* value_ptr = nullptr;
   size_t value_size = 0;
-  auto result = proxy_getProperty(buffer, size, &value_ptr, &value_size);
+  auto result = proxy_get_property(buffer, size, &value_ptr, &value_size);
   ::free(buffer);
   if (result != WasmResult::Ok) {
     return {};
@@ -496,7 +509,7 @@ template <typename T> inline bool getValue(std::initializer_list<StringView> par
 
 inline WasmResult setFilterState(StringView key, StringView value) {
   return static_cast<WasmResult>(
-      proxy_setProperty(key.data(), key.size(), value.data(), value.size()));
+      proxy_set_property(key.data(), key.size(), value.data(), value.size()));
 }
 
 inline WasmResult setFilterStateStringValue(StringView key, StringView s) {
@@ -504,8 +517,8 @@ inline WasmResult setFilterStateStringValue(StringView key, StringView s) {
 }
 
 // Continue/Respond/Route
-inline WasmResult continueRequest() { return proxy_continueRequest(); }
-inline WasmResult continueResponse() { return proxy_continueResponse(); }
+inline WasmResult continueRequest() { return proxy_continue_request(); }
+inline WasmResult continueResponse() { return proxy_continue_response(); }
 inline WasmResult sendLocalResponse(uint32_t response_code, StringView response_code_details,
                                     StringView body,
                                     const HeaderStringPairs& additional_response_headers,
@@ -513,11 +526,11 @@ inline WasmResult sendLocalResponse(uint32_t response_code, StringView response_
   const char* ptr = nullptr;
   size_t size = 0;
   exportPairs(additional_response_headers, &ptr, &size);
-  return proxy_sendLocalResponse(response_code, response_code_details.data(),
-                                 response_code_details.size(), body.data(), body.size(), ptr, size,
-                                 static_cast<uint32_t>(grpc_status));
+  return proxy_send_local_response(response_code, response_code_details.data(),
+                                   response_code_details.size(), body.data(), body.size(), ptr,
+                                   size, static_cast<uint32_t>(grpc_status));
 }
-inline void clearRouteCache() { proxy_clearRouteCache(); }
+inline void clearRouteCache() { proxy_clear_route_cache(); }
 
 // SharedData
 inline WasmResult getSharedData(StringView key, WasmDataPtr* value, uint32_t* cas = nullptr) {
@@ -526,7 +539,7 @@ inline WasmResult getSharedData(StringView key, WasmDataPtr* value, uint32_t* ca
   size_t value_size = 0;
   if (!cas)
     cas = &dummy_cas;
-  auto result = proxy_getSharedData(key.data(), key.size(), &value_ptr, &value_size, cas);
+  auto result = proxy_get_shared_data(key.data(), key.size(), &value_ptr, &value_size, cas);
   if (result != WasmResult::Ok) {
     return result;
   }
@@ -535,7 +548,7 @@ inline WasmResult getSharedData(StringView key, WasmDataPtr* value, uint32_t* ca
 }
 
 inline WasmResult setSharedData(StringView key, StringView value, uint32_t cas = 0) {
-  return proxy_setSharedData(key.data(), key.size(), value.data(), value.size(), cas);
+  return proxy_set_shared_data(key.data(), key.size(), value.data(), value.size(), cas);
 }
 
 inline WasmDataPtr getSharedDataValue(StringView key, uint32_t* cas = nullptr) {
@@ -549,50 +562,50 @@ inline WasmDataPtr getSharedDataValue(StringView key, uint32_t* cas = nullptr) {
 
 // SharedQueue
 inline WasmResult registerSharedQueue(StringView queue_name, uint32_t* token) {
-  return proxy_registerSharedQueue(queue_name.data(), queue_name.size(), token);
+  return proxy_register_shared_queue(queue_name.data(), queue_name.size(), token);
 }
 
 inline WasmResult resolveSharedQueue(StringView vm_id, StringView queue_name, uint32_t* token) {
-  return proxy_resolveSharedQueue(vm_id.data(), vm_id.size(), queue_name.data(), queue_name.size(),
-                                  token);
+  return proxy_resolve_shared_queue(vm_id.data(), vm_id.size(), queue_name.data(),
+                                    queue_name.size(), token);
 }
 
 inline WasmResult enqueueSharedQueue(uint32_t token, StringView data) {
-  return proxy_enqueueSharedQueue(token, data.data(), data.size());
+  return proxy_enqueue_shared_queue(token, data.data(), data.size());
 }
 
 inline WasmResult dequeueSharedQueue(uint32_t token, WasmDataPtr* data) {
   const char* data_ptr = nullptr;
   size_t data_size = 0;
-  auto result = proxy_dequeueSharedQueue(token, &data_ptr, &data_size);
+  auto result = proxy_dequeue_shared_queue(token, &data_ptr, &data_size);
   *data = std::make_unique<WasmData>(data_ptr, data_size);
   return result;
 }
 
 // Headers/Trailers
 inline WasmResult addHeaderMapValue(HeaderMapType type, StringView key, StringView value) {
-  return proxy_addHeaderMapValue(type, key.data(), key.size(), value.data(), value.size());
+  return proxy_add_header_map_value(type, key.data(), key.size(), value.data(), value.size());
 }
 
 inline WasmDataPtr getHeaderMapValue(HeaderMapType type, StringView key) {
   const char* value_ptr = nullptr;
   size_t value_size = 0;
-  proxy_getHeaderMapValue(type, key.data(), key.size(), &value_ptr, &value_size);
+  proxy_get_header_map_value(type, key.data(), key.size(), &value_ptr, &value_size);
   return std::make_unique<WasmData>(value_ptr, value_size);
 }
 
 inline WasmResult replaceHeaderMapValue(HeaderMapType type, StringView key, StringView value) {
-  return proxy_replaceHeaderMapValue(type, key.data(), key.size(), value.data(), value.size());
+  return proxy_replace_header_map_value(type, key.data(), key.size(), value.data(), value.size());
 }
 
 inline WasmResult removeHeaderMapValue(HeaderMapType type, StringView key) {
-  return proxy_removeHeaderMapValue(type, key.data(), key.size());
+  return proxy_remove_header_map_value(type, key.data(), key.size());
 }
 
 inline WasmDataPtr getHeaderMapPairs(HeaderMapType type) {
   const char* ptr = nullptr;
   size_t size = 0;
-  proxy_getHeaderMapPairs(type, &ptr, &size);
+  proxy_get_header_map_pairs(type, &ptr, &size);
   return std::make_unique<WasmData>(ptr, size);
 }
 
@@ -600,11 +613,11 @@ inline WasmResult setHeaderMapPairs(HeaderMapType type, const HeaderStringPairs&
   const char* ptr = nullptr;
   size_t size = 0;
   exportPairs(pairs, &ptr, &size);
-  return proxy_setHeaderMapPairs(type, ptr, size);
+  return proxy_set_header_map_pairs(type, ptr, size);
 }
 
 inline WasmResult getHeaderMapSize(HeaderMapType type, size_t* size) {
-  return proxy_getHeaderMapSize(type, size);
+  return proxy_get_header_map_size(type, size);
 }
 
 inline WasmResult addRequestHeader(StringView key, StringView value) {
@@ -699,12 +712,12 @@ inline WasmResult getResponseTrailerSize(size_t* size) {
 inline WasmDataPtr getBufferBytes(BufferType type, size_t start, size_t length) {
   const char* ptr = nullptr;
   size_t size = 0;
-  proxy_getBufferBytes(type, start, length, &ptr, &size);
+  proxy_get_buffer_bytes(type, start, length, &ptr, &size);
   return std::make_unique<WasmData>(ptr, size);
 }
 
 inline WasmResult getBufferStatus(BufferType type, size_t* size, uint32_t* flags) {
-  return proxy_getBufferStatus(type, size, flags);
+  return proxy_get_buffer_status(type, size, flags);
 }
 
 // HTTP
@@ -751,9 +764,9 @@ inline WasmResult makeHttpCall(StringView uri, const HeaderStringPairs& request_
   size_t headers_size = 0, trailers_size = 0;
   MakeHeaderStringPairsBuffer(request_headers, &headers_ptr, &headers_size);
   MakeHeaderStringPairsBuffer(request_trailers, &trailers_ptr, &trailers_size);
-  WasmResult result = proxy_httpCall(uri.data(), uri.size(), headers_ptr, headers_size,
-                                     request_body.data(), request_body.size(), trailers_ptr,
-                                     trailers_size, timeout_milliseconds, token_ptr);
+  WasmResult result = proxy_http_call(uri.data(), uri.size(), headers_ptr, headers_size,
+                                      request_body.data(), request_body.size(), trailers_ptr,
+                                      trailers_size, timeout_milliseconds, token_ptr);
   ::free(headers_ptr);
   ::free(trailers_ptr);
   return result;
@@ -762,19 +775,19 @@ inline WasmResult makeHttpCall(StringView uri, const HeaderStringPairs& request_
 // Low level metrics interface.
 
 inline WasmResult defineMetric(MetricType type, StringView name, uint32_t* metric_id) {
-  return proxy_defineMetric(type, name.data(), name.size(), metric_id);
+  return proxy_define_metric(type, name.data(), name.size(), metric_id);
 }
 
 inline WasmResult incrementMetric(uint32_t metric_id, int64_t offset) {
-  return proxy_incrementMetric(metric_id, offset);
+  return proxy_increment_metric(metric_id, offset);
 }
 
 inline WasmResult recordMetric(uint32_t metric_id, uint64_t value) {
-  return proxy_recordMetric(metric_id, value);
+  return proxy_record_metric(metric_id, value);
 }
 
 inline WasmResult getMetric(uint32_t metric_id, uint64_t* value) {
-  return proxy_getMetric(metric_id, value);
+  return proxy_get_metric(metric_id, value);
 }
 
 // Higher level metrics interface.
@@ -1140,23 +1153,23 @@ inline WasmResult grpcCall(StringView service, StringView service_name, StringVi
                            uint32_t timeout_milliseconds, uint32_t* token_ptr) {
   std::string serialized_request;
   request.SerializeToString(&serialized_request);
-  return proxy_grpcCall(service.data(), service.size(), service_name.data(), service_name.size(),
-                        method_name.data(), method_name.size(), serialized_request.data(),
-                        serialized_request.size(), timeout_milliseconds, token_ptr);
+  return proxy_grpc_call(service.data(), service.size(), service_name.data(), service_name.size(),
+                         method_name.data(), method_name.size(), serialized_request.data(),
+                         serialized_request.size(), timeout_milliseconds, token_ptr);
 }
 
 inline WasmResult grpcStream(StringView service, StringView service_name, StringView method_name,
                              uint32_t* token_ptr) {
-  return proxy_grpcStream(service.data(), service.size(), service_name.data(), service_name.size(),
-                          method_name.data(), method_name.size(), token_ptr);
+  return proxy_grpc_stream(service.data(), service.size(), service_name.data(), service_name.size(),
+                           method_name.data(), method_name.size(), token_ptr);
 }
 
-inline WasmResult grpcCancel(uint32_t token) { return proxy_grpcCancel(token); }
+inline WasmResult grpcCancel(uint32_t token) { return proxy_grpc_cancel(token); }
 
-inline WasmResult grpcClose(uint32_t token) { return proxy_grpcClose(token); }
+inline WasmResult grpcClose(uint32_t token) { return proxy_grpc_close(token); }
 
 inline WasmResult grpcSend(uint32_t token, StringView message, bool end_stream) {
-  return proxy_grpcSend(token, message.data(), message.size(), end_stream ? 1 : 0);
+  return proxy_grpc_send(token, message.data(), message.size(), end_stream ? 1 : 0);
 }
 
 inline WasmResult RootContext::httpCall(StringView uri, const HeaderStringPairs& request_headers,
@@ -1357,10 +1370,12 @@ inline WasmResult RootContext::grpcStreamHandler(StringView service, StringView 
   return result;
 }
 
-inline WasmResult ContextBase::setEffectiveContext() { return proxy_setEffectiveContext(id_); }
+inline WasmResult ContextBase::setEffectiveContext() { return proxy_set_effective_context(id_); }
 
 inline uint64_t getCurrentTimeNanoseconds() {
   uint64_t t;
-  CHECK_RESULT(proxy_getCurrentTimeNanoseconds(&t));
+  CHECK_RESULT(proxy_get_current_time_nanoseconds(&t));
   return t;
 }
+
+inline void RootContext::done() { proxy_done(); }
